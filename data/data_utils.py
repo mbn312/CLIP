@@ -5,7 +5,7 @@ from datasets import load_dataset
 
 class FashionMNIST(Dataset):
     def __init__(self, train=True):
-        self.dataset = load_dataset("fashion_mnist")
+        self.dataset = load_dataset("fashion_mnist", trust_remote_code=False)
 
         self.transform = T.ToTensor()
 
