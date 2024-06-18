@@ -1,0 +1,4 @@
+datasets==2.17.1
+numpy==2.0.0
+torch==2.2.0+cu121
+torchvision==0.17.0+cu121
