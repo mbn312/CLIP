@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import torchvision.transforms as T
 from datasets import load_dataset
 
+
 class FashionMNIST(Dataset):
     def __init__(self, train=True):
         self.dataset = load_dataset("fashion_mnist", trust_remote_code=False)
@@ -36,20 +37,37 @@ class FashionMNIST(Dataset):
 
         cap, mask = tokenizer(self.captions[self.dataset[self.split][i]["label"]])
 
-        mask = mask.repeat(len(mask),1)
+        mask = mask.unsqueeze(0).repeat(mask.shape[0], 1)
 
         return {"image": img, "caption": cap, "mask": mask}
     
 
 def tokenizer(text, encode=True, mask=None, max_seq_length=32):
     if encode:
-        out = chr(2) + text + chr(3) # Adding SOT and EOT tokens
-        out = out + "".join([chr(0) for _ in range(max_seq_length-len(out))]) # Adding Padding
-        out = torch.IntTensor(list(out.encode("utf-8"))) # Encoding Text
-        mask = torch.ones(len(out.nonzero()))
-        mask = torch.cat((mask,torch.zeros(max_seq_length-len(mask)))).type(torch.IntTensor)
+        encoded = list((chr(2) + text + chr(3)).encode("utf-8"))  # Adding SOT and EOT tokens
+        if len(encoded) > max_seq_length:
+            raise ValueError(
+                f"Text is too long for max_seq_length={max_seq_length}: "
+                f"got {len(encoded)} encoded bytes including special tokens."
+            )
+
+        out = torch.tensor(
+            encoded + [0] * (max_seq_length - len(encoded)),
+            dtype=torch.int32,
+        )
+        mask = torch.zeros(max_seq_length, dtype=torch.int32)
+        mask[:len(encoded)] = 1
     else:
-        out = [chr(x) for x in text[1:len(mask.nonzero())-1]]
+        if mask is None:
+            raise ValueError("mask is required when encode=False.")
+
+        if mask.ndim == 2:
+            mask = mask[0]
+        elif mask.ndim != 1:
+            raise ValueError("mask must be 1D or 2D when decode=False.")
+
+        valid_length = int(mask.ne(0).sum().item())
+        out = [chr(int(x)) for x in text[1:valid_length-1]]
         out = "".join(out)
         mask = None
 

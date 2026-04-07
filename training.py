@@ -5,14 +5,27 @@ from model.model import CLIP
 from torch.optim import Adam
 import numpy as np
 
-DEVICE = torch.device("cpu")
 
-def train(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, lr, epochs, model_location):
+def resolve_device(device=None):
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    return torch.device(device)
+
+
+def build_text_batch(captions, device):
+    text = torch.stack([tokenizer(x)[0] for x in captions]).to(device)
+    mask = torch.stack([tokenizer(x)[1] for x in captions]).to(device)
+
+    return text, mask
+
+
+def train(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, lr, epochs, model_location, device=None):
+    device = resolve_device(device)
     dataset = FashionMNIST()
     dataloader = DataLoader(dataset, shuffle=True, batch_size=batch_size)
 
-    model = CLIP(emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers).to(DEVICE)
+    model = CLIP(emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers).to(device)
 
     optimizer = Adam(model.parameters(), lr=lr)
     
@@ -20,7 +33,7 @@ def train(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_
 
     for epoch in range(epochs):
         for _, data in enumerate(dataloader, 0):
-            img, cap, mask = data["image"].to(DEVICE), data["caption"].to(DEVICE), data["mask"].to(DEVICE)
+            img, cap, mask = data["image"].to(device), data["caption"].to(device), data["mask"].to(device)
             loss = model(img,cap,mask)
             optimizer.zero_grad()
             loss.backward()
@@ -35,22 +48,21 @@ def train(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_
             print("Model Saved.")
 
 
-def test(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, model_location):
+def test(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, model_location, device=None):
+    device = resolve_device(device)
     test_set = FashionMNIST(train=False)
     test_loader = DataLoader(test_set, shuffle=False, batch_size=batch_size)
 
-    model = CLIP(emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers).to(DEVICE)
-    model.load_state_dict(torch.load(model_location, map_location=DEVICE))
+    model = CLIP(emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers).to(device)
+    model.load_state_dict(torch.load(model_location, map_location=device))
 
     # Getting dataset captions to compare images to
-    text = torch.stack([tokenizer(x)[0] for x in test_set.captions.values()]).to(DEVICE)
-    mask = torch.stack([tokenizer(x)[1] for x in test_set.captions.values()])
-    mask = mask.repeat(1,len(mask[0])).reshape(len(mask),len(mask[0]),len(mask[0])).to(DEVICE)
+    text, mask = build_text_batch(test_set.captions.values(), device)
 
     correct, total = 0,0
     with torch.no_grad():
         for data in test_loader:
-            images, labels = data["image"].to(DEVICE), data["caption"].to(DEVICE)
+            images, labels = data["image"].to(device), data["caption"].to(device)
             image_features = model.image_encoder(images)
             text_features = model.text_encoder(text, mask=mask)
 
@@ -58,7 +70,7 @@ def test(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_l
             text_features /= text_features.norm(dim=-1, keepdim=True)
             similarity = (100.0 * (image_features @ text_features.T)).softmax(dim=-1)
             _, indices = torch.max(similarity,1)
-            pred = torch.stack([tokenizer(test_set.captions[int(i)])[0] for i in indices]).to(DEVICE)
+            pred = torch.stack([tokenizer(test_set.captions[int(i)])[0] for i in indices]).to(device)
             correct += int(sum(torch.sum((pred==labels),dim=1)//len(pred[0])))
             total += len(labels)
 
@@ -83,9 +95,9 @@ if __name__=="__main__":
     batch_size = 128
     model_location = "./clip.pt"
 
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device: ", DEVICE, f"({torch.cuda.get_device_name(DEVICE)})" if torch.cuda.is_available() else "")
+    device = resolve_device()
+    print("Using device: ", device, f"({torch.cuda.get_device_name(device)})" if torch.cuda.is_available() else "")
 
-    train(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, lr, epochs, model_location)
+    train(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, lr, epochs, model_location, device=device)
 
-    test(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, model_location)
+    test(batch_size, emb_dim, vit_width, img_size, patch_size, n_channels, vit_layers, vit_heads, vocab_size, text_width, max_seq_length, text_heads, text_layers, model_location, device=device)

@@ -49,7 +49,7 @@ class AttentionHead(nn.Module):
 
     # Applying Attention Mask
     if mask is not None:
-        attention = attention.masked_fill(mask == 0, float("-inf"))
+        attention = attention.masked_fill(~mask.to(dtype=torch.bool), float("-inf"))
 
     attention = torch.softmax(attention, dim=-1)
 
@@ -124,7 +124,38 @@ class TextEncoder(nn.Module):
         # learned proj of image to embed
         self.projection = nn.Parameter(torch.randn(width, emb_dim))
 
+    def _prepare_text_mask(self, text, mask):
+        batch_size, seq_length = text.shape
+
+        if mask is None:
+            token_mask = text.ne(0)
+            attention_mask = token_mask.unsqueeze(1).expand(-1, seq_length, -1)
+        elif mask.ndim == 2:
+            if mask.shape != text.shape:
+                raise ValueError(
+                    f"2D mask must match text shape {tuple(text.shape)}, got {tuple(mask.shape)}."
+                )
+            token_mask = mask.to(device=text.device).ne(0)
+            attention_mask = token_mask.unsqueeze(1).expand(-1, seq_length, -1)
+        elif mask.ndim == 3:
+            expected_shape = (batch_size, seq_length, seq_length)
+            if tuple(mask.shape) != expected_shape:
+                raise ValueError(
+                    f"3D mask must have shape {expected_shape}, got {tuple(mask.shape)}."
+                )
+            attention_mask = mask.to(device=text.device).ne(0)
+            token_mask = attention_mask.any(dim=1)
+        else:
+            raise ValueError("mask must be None, 2D [batch, seq], or 3D [batch, seq, seq].")
+
+        if not token_mask.any(dim=1).all():
+            raise ValueError("Each text sample must contain at least one non-padding token.")
+
+        return token_mask, attention_mask
+
     def forward(self, text, mask=None):
+        token_mask, attention_mask = self._prepare_text_mask(text, mask)
+
         # Text Embedding
         x = self.encoder_embedding(text)
 
@@ -133,10 +164,11 @@ class TextEncoder(nn.Module):
 
         # Transformer Encoder
         for encoder_layer in self.encoder:
-            x = encoder_layer(x, mask=mask)
+            x = encoder_layer(x, mask=attention_mask)
 
         # Takes features from the EOT Embedding
-        x = x[torch.arange(text.shape[0]),torch.sub(torch.sum(mask[:,0],dim=1),1)]
+        eot_indices = token_mask.sum(dim=1).long() - 1
+        x = x[torch.arange(text.shape[0], device=text.device), eot_indices]
 
         # joint multimodal embedding
         if self.projection is not None:
@@ -207,8 +239,6 @@ class CLIP(nn.Module):
 
         self.temperature = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
     def forward(self,image,text, mask=None):
         I_e = self.image_encoder(image)
@@ -218,7 +248,7 @@ class CLIP(nn.Module):
         logits = (I_e @ T_e.transpose(-2,-1)) * torch.exp(self.temperature)
 
         # symmetric loss function
-        labels = torch.arange(logits.shape[0]).to(self.device)
+        labels = torch.arange(logits.shape[0], device=logits.device)
 
         loss_i = nn.functional.cross_entropy(logits.transpose(-2,-1), labels)
         loss_t = nn.functional.cross_entropy(logits, labels)
